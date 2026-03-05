@@ -20,7 +20,7 @@ const (
 	defaultTimeout    = 300 * time.Second
 	clientVersionCode = 49029607
 	androidAPIVersion = 28
-	defaultModel      = "Pixel 9a"
+	defaultModel      = "Pixel XL"
 	defaultMake       = "Google"
 )
 
