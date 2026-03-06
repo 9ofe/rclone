@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"path"
 	"strings"
 	"time"
 
@@ -85,8 +86,21 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 	}
 
 	// Create the wrapped Fs
-	baseFs, err := cache.Get(ctx, fspath.JoinRootPath(opt.Remote, root))
-	if err != nil {
+	var baseFs fs.Fs
+	if root == "" {
+		baseFs, err = cache.Get(ctx, opt.Remote)
+	} else {
+		// Try to see if it's a file by appending .png
+		remotePath := fspath.JoinRootPath(opt.Remote, root+".png")
+		baseFs, err = cache.Get(ctx, remotePath)
+		if err != fs.ErrorIsFile {
+			// Try directory without appending .png
+			remotePath = fspath.JoinRootPath(opt.Remote, root)
+			baseFs, err = cache.Get(ctx, remotePath)
+		}
+	}
+
+	if err != nil && err != fs.ErrorIsFile {
 		return nil, err
 	}
 
@@ -112,6 +126,14 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		SlowModTime:             baseFs.Features().SlowModTime,
 		SlowHash:                true,
 	}).Fill(ctx, f)
+
+	if err == fs.ErrorIsFile {
+		f.root = path.Dir(f.root)
+		if f.root == "." || f.root == "/" {
+			f.root = ""
+		}
+		return f, fs.ErrorIsFile
+	}
 
 	return f, nil
 }
