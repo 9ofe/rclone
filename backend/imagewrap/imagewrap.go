@@ -357,19 +357,70 @@ func (o *Object) SetModTime(ctx context.Context, t time.Time) error {
 
 // Size returns the size of the file
 func (o *Object) Size() int64 {
-	// The prompt explicitly states to return the total size.
-	// "For listing, just return the size reported by the underlying remote."
-	return o.base.Size()
+	// Calculate original size based on wrapped size
+	// Wrapped Size = BasePng (len) + Magic (8) + NameLen (2) + Name (len) + Size (8) + Original Size
+	// Therefore: Original Size = Wrapped Size - BasePng - 18 - NameLen
+	remoteName := o.Remote()
+	headerSize := int64(len(o.fs.basePng)) + 8 + 2 + int64(len(remoteName)) + 8
+	wrappedSize := o.base.Size()
+	if wrappedSize < headerSize {
+		// It's smaller than a header, probably a normal PNG, return its actual size
+		return wrappedSize
+	}
+	// For wrapped files, this will return the exact original size perfectly!
+	return wrappedSize - headerSize
 }
 
 // Open opens the file for read.  Call Close() on the returned io.ReadCloser
 func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (io.ReadCloser, error) {
+	// Calculate header size
+	remoteName := o.Remote()
+	headerSize := int64(len(o.fs.basePng)) + 8 + 2 + int64(len(remoteName)) + 8
+
+	// Modify options for chunked/range downloads
+	var newOptions []fs.OpenOption
+	var isOffset bool
+	for _, opt := range options {
+		switch x := opt.(type) {
+		case *fs.RangeOption:
+			// Adjust range to skip header
+			newOpt := &fs.RangeOption{Start: x.Start + headerSize, End: x.End}
+			if x.End >= 0 {
+				newOpt.End = x.End + headerSize
+			}
+			newOptions = append(newOptions, newOpt)
+			if x.Start > 0 {
+				isOffset = true
+			}
+		case *fs.SeekOption:
+			// Adjust seek to skip header
+			newOpt := &fs.SeekOption{Offset: x.Offset + headerSize}
+			newOptions = append(newOptions, newOpt)
+			if x.Offset > 0 {
+				isOffset = true
+			}
+		case *fs.HTTPOption:
+			// pass through
+			newOptions = append(newOptions, x)
+		default:
+			newOptions = append(newOptions, x)
+		}
+	}
+
 	// First open the underlying object
-	rc, err := o.base.Open(ctx, options...)
+	rc, err := o.base.Open(ctx, newOptions...)
 	if err != nil {
 		return nil, err
 	}
 
+	// If the file was opened with an offset > 0, we can't verify the header because we are in the middle of the file.
+	// Rclone expects exactly the requested bytes, and the underlying remote has already skipped the header + offset.
+	// So we just return the stream.
+	if isOffset {
+		return rc, nil
+	}
+
+	// No offset requested, read and verify header as normal
 	// Read the base PNG
 	basePngBuf := make([]byte, len(o.fs.basePng))
 	n, err := io.ReadFull(rc, basePngBuf)
